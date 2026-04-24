@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     PINECONE_API_KEY: str
     GOOGLE_API_KEY: str
     PINECONE_INDEX_NAME: str = "hmscore"
-    EMBEDDING_MODEL: str = "text-embedding-004"
+    EMBEDDING_MODEL: str = "models/gemini-embedding-2"
     LLM_MODEL: str = "gemini-1.5-flash"
     
     # Neo4j Settings
