@@ -20,8 +20,7 @@ class VectorStore:
             try:
                 from pinecone import Pinecone
                 self._client = Pinecone(
-                    api_key=settings.pinecone_api_key,
-                    environment=settings.pinecone_environment
+                    api_key=settings.PINECONE_API_KEY
                 )
             except Exception as e:
                 logger.error(f"Failed to initialize Pinecone client: {e}")
@@ -32,7 +31,7 @@ class VectorStore:
     def index(self):
         """Get or create the Pinecone index."""
         if self._index is None:
-            self._index = self.client.Index(INDEX_CONFIG["name"])
+            self._index = self.client.Index(settings.PINECONE_INDEX_NAME)
         return self._index
 
     async def upsert(
@@ -97,9 +96,9 @@ class VectorStore:
         """Get embedding for text using OpenAI."""
         try:
             from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=settings.openai_api_key)
+            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
             response = await client.embeddings.create(
-                model="text-embedding-ada-002",
+                model=settings.EMBEDDING_MODEL,
                 input=text
             )
             return response.data[0].embedding

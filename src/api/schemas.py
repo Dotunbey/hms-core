@@ -1,18 +1,25 @@
-from pydantic import BaseModel
+import sys
+import os
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
+def get_utc_now():
+    return datetime.now(timezone.utc)
 
 class MemoryObject(BaseModel):
     """Core memory entity stored in the vector store."""
-
     id: str
     content: str
     embedding: Optional[List[float]] = None
-    metadata: Dict[str, Any] = {}
-    created_at: datetime = datetime.now()
-    updated_at: datetime = datetime.now()
-
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, 
+        description="Must contain 'source_id' for PRD traceability"
+    )
+    memory_type: str = Field(default="Document", description="Category of memory segment")
+    confidence_score: float = Field(default=1.0, description="Confidence score for this memory object")
+    created_at: datetime = Field(default_factory=get_utc_now)
+    updated_at: datetime = Field(default_factory=get_utc_now)
 
 class Entity(BaseModel):
     """Represents an entity in the knowledge graph."""
@@ -20,7 +27,7 @@ class Entity(BaseModel):
     id: str
     label: str
     properties: Dict[str, Any] = {}
-    created_at: datetime = datetime.now()
+    created_at: datetime = Field(default_factory=get_utc_now)
 
 
 class Relationship(BaseModel):

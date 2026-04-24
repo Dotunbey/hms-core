@@ -1,72 +1,127 @@
-"""Document processing: chunking and metadata tagging."""
-
-import uuid
-from typing import List, Dict, Any, Optional
+import sys
+import os
+import hashlib
+import json
+from typing import List, Dict, Any
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
 from loguru import logger
-from src.ingestion.parsers import DocumentParser
-from src.ingestion.vector_ops import VectorStore
 
+from src.api.schemas import MemoryObject
+from src.config.settings import settings
+from src.memory.vector_store import VectorStore
+from src.memory.graph_store import GraphStore
 
 class DocumentProcessor:
-    """Process documents: parse, chunk, and store in vector DB."""
-
     def __init__(self):
-        self.parser = DocumentParser()
+        self.text_splitter = None
         self.vector_store = VectorStore()
+        self.graph_store = GraphStore()
+        self.llm = ChatOpenAI(
+            model="gpt-4o-mini",
+            api_key=settings.OPENAI_API_KEY,
+            temperature=0
+        )
 
-    async def process_document(
-        self,
-        file_path: str,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> List[str]:
-        """Process a document and store chunks in vector store."""
-        # Parse document
-        text = self.parser.parse(file_path)
+    def _generate_id(self, content: str, source_id: str) -> str:
+        unique_string = f"{source_id}-{content}"
+        return hashlib.sha256(unique_string.encode()).hexdigest()
 
-        # Chunk text
-        chunks = self._chunk_text(text, chunk_size, chunk_overlap)
+    async def _extract_entities_and_segment(self, content: str) -> Dict[str, Any]:
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are an AI data processor for the Hermes Memory System. "
+                       "Your task is to analyze the text and return a JSON object with two keys: "
+                       "'memory_type' (one of: 'Identity Context', 'Policies and Rules', "
+                       "'Historical Actions', 'Events and Campaigns', 'Documents', 'Conversations', 'Insights and Learnings'), "
+                       "and 'entities' (a list of dictionaries, each with 'label' (e.g. Person, Organization, Role, Document), "
+                       "'name' (the entity value), and optionally 'relationships' (list of dicts with 'type' and 'target_name')). "
+                       "Return ONLY valid JSON."),
+            ("user", "Text: {text}")
+        ])
+        
+        chain = prompt | self.llm
+        try:
+            response = await chain.ainvoke({"text": content[:2000]})
+            content_str = response.content.strip()
+            if content_str.startswith("```json"):
+                content_str = content_str[7:-3]
+            elif content_str.startswith("```"):
+                content_str = content_str[3:-3]
+                
+            data = json.loads(content_str)
+            return data
+        except Exception as e:
+            logger.error(f"Entity extraction failed: {e}")
+            return {"memory_type": "Documents", "entities": []}
 
-        # Generate embeddings and store
-        chunk_ids = []
-        for i, chunk in enumerate(chunks):
-            chunk_id = str(uuid.uuid4())
-            chunk_metadata = {
-                "source": file_path,
-                "chunk_index": i,
-                "total_chunks": len(chunks),
-                **(metadata or {})
-            }
-
+    async def process_document(self, file_path: str, chunk_size: int, chunk_overlap: int, metadata: Dict[str, Any]) -> List[MemoryObject]:
+        logger.info(f"Processing document: {file_path}")
+        loader = PyPDFLoader(file_path)
+        pages = loader.load()
+        full_text = "\n".join([page.page_content for page in pages])
+        
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=["\n\n", "\n", ".", " ", ""]
+        )
+        chunks = self.text_splitter.split_text(full_text)
+        memory_objects = []
+        source_id = metadata.get("source_id", os.path.basename(file_path))
+        
+        for chunk in chunks:
+            chunk_id = self._generate_id(chunk, source_id)
+            analysis = await self._extract_entities_and_segment(chunk)
+            memory_type = analysis.get("memory_type", "Documents")
+            entities = analysis.get("entities", [])
+            
+            meta = metadata.copy()
+            meta["source_id"] = source_id
+            
+            memory_obj = MemoryObject(
+                id=chunk_id,
+                content=chunk,
+                metadata=meta,
+                memory_type=memory_type,
+                confidence_score=1.0
+            )
+            memory_objects.append(memory_obj)
+            
             await self.vector_store.upsert(
                 id=chunk_id,
                 text=chunk,
-                metadata=chunk_metadata,
+                metadata=meta,
                 namespace="documents"
             )
-            chunk_ids.append(chunk_id)
-
-        logger.info(f"Processed {len(chunks)} chunks from {file_path}")
-        return chunk_ids
-
-    def _chunk_text(
-        self,
-        text: str,
-        chunk_size: int,
-        chunk_overlap: int
-    ) -> List[str]:
-        """Split text into overlapping chunks."""
-        chunks = []
-        start = 0
-
-        while start < len(text):
-            end = start + chunk_size
-            chunk = text[start:end]
-
-            if chunk.strip():
-                chunks.append(chunk.strip())
-
-            start += chunk_size - chunk_overlap
-
-        return chunks
+            
+            for entity in entities:
+                entity_name = entity.get("name")
+                entity_label = entity.get("label", "Unknown")
+                if entity_name:
+                    entity_id = self._generate_id(entity_name, entity_label)
+                    await self.graph_store.create_entity(
+                        entity_id=entity_id,
+                        label=entity_label,
+                        properties={"name": entity_name, "source_id": source_id}
+                    )
+                    for rel in entity.get("relationships", []):
+                        target_name = rel.get("target_name")
+                        rel_type = rel.get("type", "RELATES_TO")
+                        if target_name:
+                            target_id = self._generate_id(target_name, "Unknown")
+                            await self.graph_store.create_entity(
+                                entity_id=target_id,
+                                label="Unknown",
+                                properties={"name": target_name}
+                            )
+                            await self.graph_store.create_relationship(
+                                source_id=entity_id,
+                                target_id=target_id,
+                                relation_type=rel_type.upper().replace(" ", "_"),
+                                properties={"source_id": source_id}
+                            )
+            
+        logger.info(f"Successfully processed and stored {len(memory_objects)} chunks.")
+        return memory_objects
