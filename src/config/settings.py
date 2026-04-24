@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
     
+    # Postgres Settings
+    POSTGRES_URI: str = "postgresql://postgres:password@postgres:5432/hmscore"
+    
     # App Settings
     log_level: str = "INFO"
     

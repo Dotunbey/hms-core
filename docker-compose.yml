@@ -8,9 +8,10 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      - .:/app
     depends_on:
       - neo4j
+      - postgres
     command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
 
   neo4j:
@@ -25,6 +26,18 @@ services:
       - neo4j_data:/data
       - neo4j_logs:/logs
 
+  postgres:
+    image: postgres:15
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=hmscore
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
 volumes:
   neo4j_data:
   neo4j_logs:
+  postgres_data:

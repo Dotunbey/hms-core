@@ -1,14 +1,18 @@
 """Hybrid retriever combining vector and graph search."""
 
+import json
 from typing import List, Dict, Any, Optional
 from loguru import logger
+from sqlalchemy.orm import joinedload
 from src.memory.vector_store import VectorStore
 from src.memory.graph_store import GraphStore
 from src.api.schemas import MemoryObject, Entity, Relationship, QueryResponse
+from src.db.session import SessionLocal
+from src.db.models import MemoryObject as DBMemoryObject, Section as DBSection
 
 
 class HybridRetriever:
-    """Hybrid search combining vector and graph retrieval."""
+    """Hybrid search combining vector, relational, and graph retrieval."""
 
     def __init__(self):
         self.vector_store = VectorStore()
@@ -20,35 +24,72 @@ class HybridRetriever:
         top_k: int = 5,
         include_graph: bool = True
     ) -> QueryResponse:
-        """Search both vector and graph stores."""
-        # Vector search
+        """Search across Pinecone, Postgres, and Neo4j."""
+        
+        # 1. Vector Search (Pinecone) -> returns metadata with memory_ids
         vector_results = await self.vector_store.query(
             query_text=query,
             top_k=top_k,
             namespace="documents"
         )
+        
+        # Extract candidate memory IDs
+        memory_ids = []
+        for res in vector_results:
+            mem_id = res.get("metadata", {}).get("memory_id")
+            if mem_id and mem_id not in memory_ids:
+                memory_ids.append(mem_id)
+                
+        # 2. Relational Search (Postgres) -> expand candidate IDs to full context
+        memories = []
+        if memory_ids:
+            db = SessionLocal()
+            try:
+                # Fetch memory objects and eager load their section for hierarchical context
+                db_memories = db.query(DBMemoryObject).options(
+                    joinedload(DBMemoryObject.section)
+                ).filter(DBMemoryObject.id.in_(memory_ids)).all()
+                
+                for db_mem in db_memories:
+                    # Construct full context using section hierarchy if available
+                    context_prefix = ""
+                    if db_mem.section:
+                        context_prefix = f"[{db_mem.section.title}]\n"
+                        
+                    content = context_prefix + (db_mem.text_content or "")
+                    if db_mem.structured_content:
+                        content += "\n" + json.dumps(db_mem.structured_content, indent=2)
+                        
+                    memories.append(
+                        MemoryObject(
+                            id=db_mem.id,
+                            content=content.strip(),
+                            metadata={
+                                "document_id": db_mem.document_id,
+                                "section_id": db_mem.section_id,
+                                "type": db_mem.type
+                            },
+                            memory_type=db_mem.type,
+                            confidence_score=1.0,
+                            created_at=db_mem.created_at,
+                            updated_at=db_mem.created_at
+                        )
+                    )
+            except Exception as e:
+                logger.error(f"Postgres retrieval failed: {e}")
+            finally:
+                db.close()
 
-        # Convert to MemoryObject
-        memories = [
-            MemoryObject(
-                id=result["id"],
-                content=result["text"],
-                metadata=result["metadata"]
-            )
-            for result in vector_results
-        ]
-
-        # Graph search (if enabled)
+        # 3. Graph Search (Neo4j) -> resolve entities
         entities = []
         relationships = []
 
         if include_graph:
-            # Extract potential entities from query
-            # For now, do a simple keyword-based graph search
             graph_results = await self._graph_search(query)
             entities = graph_results.get("entities", [])
             relationships = graph_results.get("relationships", [])
 
+        # 4. Assemble Results
         return QueryResponse(
             results=memories,
             entities=entities,
@@ -67,10 +108,9 @@ class HybridRetriever:
         return None
 
     async def _graph_search(self, query: str) -> Dict[str, Any]:
-        """Perform graph-based search."""
+        """Perform graph-based search using LLM query routing."""
         from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_core.prompts import ChatPromptTemplate
-        import json
         from src.config.settings import settings
         
         llm = ChatGoogleGenerativeAI(

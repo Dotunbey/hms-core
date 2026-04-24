@@ -5,8 +5,10 @@ pinecone
 langchain-google-genai
 python-dotenv
 pydantic-settings
-pypdf
 langchain-community
 langchain-text-splitters
 loguru
 neo4j
+sqlalchemy
+psycopg2-binary
+unstructured

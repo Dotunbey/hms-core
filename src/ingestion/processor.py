@@ -1,22 +1,23 @@
-import sys
 import os
-import hashlib
 import json
+import hashlib
 from typing import List, Dict, Any
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
-from loguru import logger
 
-from src.api.schemas import MemoryObject
-from src.config.settings import settings
+from src.db.session import SessionLocal
+from src.db.models import Document as DBDocument, Section as DBSection, MemoryObject as DBMemoryObject
+from src.storage.blob import BlobStorage
+from src.ingestion.parser import DocumentParser
 from src.memory.vector_store import VectorStore
 from src.memory.graph_store import GraphStore
+from src.config.settings import settings
 
 class DocumentProcessor:
     def __init__(self):
-        self.text_splitter = None
+        self.blob_storage = BlobStorage()
+        self.parser = DocumentParser()
         self.vector_store = VectorStore()
         self.graph_store = GraphStore()
         self.llm = ChatGoogleGenerativeAI(
@@ -25,18 +26,19 @@ class DocumentProcessor:
             temperature=0
         )
 
-    def _generate_id(self, content: str, source_id: str) -> str:
-        unique_string = f"{source_id}-{content}"
+    def _generate_id(self, *args) -> str:
+        unique_string = "-".join(str(a) for a in args)
         return hashlib.sha256(unique_string.encode()).hexdigest()
 
-    async def _extract_entities_and_segment(self, content: str) -> Dict[str, Any]:
+    async def _extract_entities(self, content: str) -> Dict[str, Any]:
+        """Extracts entities and relationships from a text block."""
+        if not content or len(content.strip()) < 10:
+            return {"entities": []}
+            
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are an AI data processor for the Hermes Memory System. "
-                       "Your task is to analyze the text and return a JSON object with two keys: "
-                       "'memory_type' (one of: 'Identity Context', 'Policies and Rules', "
-                       "'Historical Actions', 'Events and Campaigns', 'Documents', 'Conversations', 'Insights and Learnings'), "
-                       "and 'entities' (a list of dictionaries, each with 'label' (e.g. Person, Organization, Role, Document), "
-                       "'name' (the entity value), and optionally 'relationships' (list of dicts with 'type' and 'target_name')). "
+            ("system", "Extract key entities (Person, Organization, Role, Event, Policy) from the text. "
+                       "Return a JSON object with 'entities' (list of dicts, each with 'label', 'name', and optionally "
+                       "'relationships' which is a list of dicts with 'type' and 'target_name'). "
                        "Return ONLY valid JSON."),
             ("user", "Text: {text}")
         ])
@@ -50,78 +52,130 @@ class DocumentProcessor:
             elif content_str.startswith("```"):
                 content_str = content_str[3:-3]
                 
-            data = json.loads(content_str)
-            return data
+            return json.loads(content_str)
         except Exception as e:
             logger.error(f"Entity extraction failed: {e}")
-            return {"memory_type": "Documents", "entities": []}
+            return {"entities": []}
 
-    async def process_document(self, file_path: str, chunk_size: int, chunk_overlap: int, metadata: Dict[str, Any]) -> List[MemoryObject]:
-        logger.info(f"Processing document: {file_path}")
-        loader = PyPDFLoader(file_path)
-        pages = loader.load()
-        full_text = "\n".join([page.page_content for page in pages])
-        
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            separators=["\n\n", "\n", ".", " ", ""]
-        )
-        chunks = self.text_splitter.split_text(full_text)
-        memory_objects = []
-        source_id = metadata.get("source_id", os.path.basename(file_path))
-        
-        for chunk in chunks:
-            chunk_id = self._generate_id(chunk, source_id)
-            analysis = await self._extract_entities_and_segment(chunk)
-            memory_type = analysis.get("memory_type", "Documents")
-            entities = analysis.get("entities", [])
+    async def _resolve_and_store_graph(self, entities: List[Dict[str, Any]], source_id: str):
+        """Validates and deduplicates entities before storing in Neo4j."""
+        for entity in entities:
+            entity_name = entity.get("name")
+            entity_label = entity.get("label", "Unknown")
+            if not entity_name:
+                continue
+                
+            # Deterministic ID based on normalized name and label to prevent duplicates
+            entity_id = self._generate_id(entity_name.lower().strip(), entity_label)
             
-            meta = metadata.copy()
-            meta["source_id"] = source_id
-            
-            memory_obj = MemoryObject(
-                id=chunk_id,
-                content=chunk,
-                metadata=meta,
-                memory_type=memory_type,
-                confidence_score=1.0
-            )
-            memory_objects.append(memory_obj)
-            
-            await self.vector_store.upsert(
-                id=chunk_id,
-                text=chunk,
-                metadata=meta,
-                namespace="documents"
+            # Upsert entity in graph
+            await self.graph_store.create_entity(
+                entity_id=entity_id,
+                label=entity_label,
+                properties={"name": entity_name, "source_id": source_id}
             )
             
-            for entity in entities:
-                entity_name = entity.get("name")
-                entity_label = entity.get("label", "Unknown")
-                if entity_name:
-                    entity_id = self._generate_id(entity_name, entity_label)
+            for rel in entity.get("relationships", []):
+                target_name = rel.get("target_name")
+                rel_type = rel.get("type", "RELATES_TO").upper().replace(" ", "_")
+                
+                if target_name:
+                    # In a full system, we'd query neo4j to find the best match for target_name here
+                    target_id = self._generate_id(target_name.lower().strip(), "Unknown")
                     await self.graph_store.create_entity(
-                        entity_id=entity_id,
-                        label=entity_label,
-                        properties={"name": entity_name, "source_id": source_id}
+                        entity_id=target_id,
+                        label="Unknown",
+                        properties={"name": target_name}
                     )
-                    for rel in entity.get("relationships", []):
-                        target_name = rel.get("target_name")
-                        rel_type = rel.get("type", "RELATES_TO")
-                        if target_name:
-                            target_id = self._generate_id(target_name, "Unknown")
-                            await self.graph_store.create_entity(
-                                entity_id=target_id,
-                                label="Unknown",
-                                properties={"name": target_name}
-                            )
-                            await self.graph_store.create_relationship(
-                                source_id=entity_id,
-                                target_id=target_id,
-                                relation_type=rel_type.upper().replace(" ", "_"),
-                                properties={"source_id": source_id}
-                            )
+                    await self.graph_store.create_relationship(
+                        source_id=entity_id,
+                        target_id=target_id,
+                        relation_type=rel_type,
+                        properties={"source_id": source_id}
+                    )
+
+    async def process_document(self, file_path: str, metadata: Dict[str, Any]) -> int:
+        """
+        Full Tri-Store Ingestion Pipeline:
+        1. Parse document into blocks
+        2. Store facts in Postgres
+        3. Extract and store identity in Neo4j
+        4. Embed and store meaning in Pinecone
+        """
+        logger.info(f"Processing document via Tri-Store Pipeline: {file_path}")
+        original_filename = metadata.get("source_id", os.path.basename(file_path))
+        
+        # 1. Save to Blob Storage
+        with open(file_path, "rb") as f:
+            storage_uri = self.blob_storage.save(f, original_filename)
             
-        logger.info(f"Successfully processed and stored {len(memory_objects)} chunks.")
-        return memory_objects
+        # 2. Parse Document
+        blocks = self.parser.parse_document(file_path, strategy="auto")
+        
+        db = SessionLocal()
+        try:
+            # Create Document Record
+            db_doc = DBDocument(
+                filename=original_filename,
+                storage_uri=storage_uri
+            )
+            db.add(db_doc)
+            db.flush() # get ID
+            
+            current_section = None
+            processed_count = 0
+            
+            for block in blocks:
+                block_type = block.get("type", "Paragraph")
+                block_text = block.get("text", "")
+                
+                # Update Section Hierarchy
+                if block_type in ["Title", "Heading"]:
+                    current_section = DBSection(
+                        document_id=db_doc.id,
+                        title=block_text[:255]
+                    )
+                    db.add(current_section)
+                    db.flush()
+                    continue # optionally store headings as memory objects too, but we skip for brevity
+                    
+                # Create Memory Object in Postgres
+                mem_obj = DBMemoryObject(
+                    document_id=db_doc.id,
+                    section_id=current_section.id if current_section else None,
+                    type=block_type,
+                    text_content=block_text,
+                    structured_content=block if block_type == "Table" else None
+                )
+                db.add(mem_obj)
+                db.flush()
+                
+                # Graph Extraction & Storage
+                analysis = await self._extract_entities(block_text)
+                await self._resolve_and_store_graph(analysis.get("entities", []), source_id=db_doc.id)
+                
+                # Vector Embedding & Storage (Semantic Meaning)
+                if block_text:
+                    await self.vector_store.upsert(
+                        id=mem_obj.id,
+                        text=block_text,
+                        metadata={
+                            "memory_id": mem_obj.id,
+                            "document_id": db_doc.id,
+                            "type": block_type,
+                            "department": metadata.get("department", "general")
+                        },
+                        namespace="documents"
+                    )
+                processed_count += 1
+                
+            db.commit()
+            logger.info(f"Successfully processed {processed_count} memory objects for {original_filename}")
+            return processed_count
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to process document: {e}")
+            raise
+        finally:
+            db.close()

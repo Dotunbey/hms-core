@@ -4,7 +4,7 @@ import sys
 
 url = "http://localhost:8000/api/agent/ask"
 
-query = "write an email to john doe about the quarterly results"
+query = "What are the rules regarding playtesting according to the handbook?"
 if len(sys.argv) > 1:
     query = sys.argv[1]
 

@@ -38,7 +38,6 @@ async def query_memory(request: QueryRequest):
 async def ingest_document(
     file: UploadFile = File(...),
     chunk_size: int = Form(1000),
-    chunk_overlap: int = Form(200),
     metadata_json: Optional[str] = Form(None)
 ):
     """Ingest a document into the memory system."""
@@ -51,22 +50,22 @@ async def ingest_document(
             tmp.write(content)
             tmp_path = tmp.name
             
-        result = await processor.process_document(
+        processed_count = await processor.process_document(
             file_path=tmp_path,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
             metadata=meta
         )
         
         os.remove(tmp_path)
         
         AuditLogger.log_event(
-            actor="Admin",
+            actor="System",
             action="INGEST",
-            data_accessed=f"File: {file.filename}, Generated {len(result)} memory chunks."
+            data_accessed=f"File: {file.filename}, Processed {processed_count} chunks",
+            approval_status="APPROVED",
+            metadata={"file_name": file.filename}
         )
         
-        return {"status": "success", "chunks_processed": len(result)}
+        return {"status": "success", "chunks_processed": processed_count}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
