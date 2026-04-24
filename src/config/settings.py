@@ -7,9 +7,10 @@ ENV_PATH = os.path.join(ROOT_DIR, '.env')
 
 class Settings(BaseSettings):
     PINECONE_API_KEY: str
-    OPENAI_API_KEY: str
+    GOOGLE_API_KEY: str
     PINECONE_INDEX_NAME: str = "hmscore"
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_MODEL: str = "models/text-embedding-004"
+    LLM_MODEL: str = "gemini-1.5-flash"
     
     # Neo4j Settings
     neo4j_uri: str = "bolt://localhost:7687"

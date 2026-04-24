@@ -2,7 +2,7 @@ fastapi
 uvicorn
 python-multipart
 pinecone-client
-langchain-openai
+langchain-google-genai
 python-dotenv
 pydantic-settings
 pypdf
