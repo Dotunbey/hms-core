@@ -67,11 +67,11 @@ class ChatAgent:
             
         # 5. Log the interaction
         source_list = list(sources)
-        self.audit_logger.log_access(
-            actor_id=actor_id,
+        AuditLogger.log_event(
+            actor=actor_id,
             action="AGENT_QUERY",
-            memory_ids=[mem.id for mem in memory_result.results],
-            status="APPROVED",
+            data_accessed=[mem.id for mem in memory_result.results],
+            approval_status="APPROVED",
             metadata={"query": query, "sources": source_list}
         )
         

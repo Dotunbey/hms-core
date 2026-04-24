@@ -10,10 +10,10 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str
     PINECONE_INDEX_NAME: str = "hmscore"
     EMBEDDING_MODEL: str = "models/gemini-embedding-2"
-    LLM_MODEL: str = "gemini-1.5-flash"
+    LLM_MODEL: str = "gemini-2.5-flash"
     
     # Neo4j Settings
-    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_uri: str = "bolt://neo4j:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = "password"
     
