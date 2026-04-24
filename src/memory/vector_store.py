@@ -93,15 +93,14 @@ class VectorStore:
             raise
 
     async def _get_embedding(self, text: str) -> List[float]:
-        """Get embedding for text using OpenAI."""
+        """Get embedding for text using Google Gemini."""
         try:
-            from openai import AsyncOpenAI
-            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-            response = await client.embeddings.create(
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
+            embeddings = GoogleGenerativeAIEmbeddings(
                 model=settings.EMBEDDING_MODEL,
-                input=text
+                google_api_key=settings.GOOGLE_API_KEY
             )
-            return response.data[0].embedding
+            return await embeddings.aembed_query(text)
         except Exception as e:
             logger.error(f"Failed to get embedding: {e}")
             raise

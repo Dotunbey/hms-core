@@ -68,14 +68,14 @@ class HybridRetriever:
 
     async def _graph_search(self, query: str) -> Dict[str, Any]:
         """Perform graph-based search."""
-        from langchain_openai import ChatOpenAI
+        from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_core.prompts import ChatPromptTemplate
         import json
         from src.config.settings import settings
         
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            api_key=settings.OPENAI_API_KEY,
+        llm = ChatGoogleGenerativeAI(
+            model=settings.LLM_MODEL,
+            google_api_key=settings.GOOGLE_API_KEY,
             temperature=0
         )
         prompt = ChatPromptTemplate.from_messages([

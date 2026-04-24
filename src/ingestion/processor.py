@@ -5,7 +5,7 @@ import json
 from typing import List, Dict, Any
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from loguru import logger
 
@@ -19,9 +19,9 @@ class DocumentProcessor:
         self.text_splitter = None
         self.vector_store = VectorStore()
         self.graph_store = GraphStore()
-        self.llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            api_key=settings.OPENAI_API_KEY,
+        self.llm = ChatGoogleGenerativeAI(
+            model=settings.LLM_MODEL,
+            google_api_key=settings.GOOGLE_API_KEY,
             temperature=0
         )
 
