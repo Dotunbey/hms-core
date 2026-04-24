@@ -62,3 +62,13 @@ class IngestRequest(BaseModel):
     chunk_size: int = 1000
     chunk_overlap: int = 200
     metadata: Dict[str, Any] = {}
+
+class AgentRequest(BaseModel):
+    """Request model for agent queries."""
+    query: str
+    actor_id: str = "System"
+
+class AgentResponse(BaseModel):
+    """Response model for agent queries."""
+    answer: str
+    sources: List[str] = []

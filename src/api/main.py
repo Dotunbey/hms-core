@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from src.api.routes import health, memory
+from src.api.routes import health, memory, agent
 
 app = FastAPI(
     title="HMS Core API",
@@ -10,6 +10,7 @@ app = FastAPI(
 # Include routers
 app.include_router(health.router, prefix="/health", tags=["Health"])
 app.include_router(memory.router, prefix="/api/memory", tags=["Memory"])
+app.include_router(agent.router, prefix="/api/agent", tags=["Agent"])
 
 
 @app.get("/")

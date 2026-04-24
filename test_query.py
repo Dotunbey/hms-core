@@ -4,7 +4,7 @@ import json
 url = "http://localhost:8000/api/memory/query"
 
 data = {
-    "query": "What is the main topic of the document?",
+    "query": "write an email to john doe about the quarterly results",
     "include_graph": True
 }
 
