@@ -5,7 +5,7 @@ from src.config.settings import settings
 
 # Index configuration
 INDEX_CONFIG = {
-    "name": settings.pinecone_index_name,
+    "name": settings.PINECONE_INDEX_NAME,
     "dimension": 1536,  # OpenAI ada-002 embedding dimension
     "metric": "cosine",
     "pod_type": "p1"
