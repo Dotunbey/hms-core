@@ -11,4 +11,4 @@ loguru
 neo4j
 sqlalchemy
 psycopg2-binary
-unstructured[pdf]
+PyMuPDF
