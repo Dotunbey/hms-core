@@ -14,7 +14,7 @@ class ChatAgent:
     def __init__(self):
         self.retriever = HybridRetriever()
         self.llm = ChatGoogleGenerativeAI(
-            model=settings.LLM_MODEL,
+            model="gemini-2.0-flash",
             google_api_key=settings.GOOGLE_API_KEY,
             temperature=0.3
         )

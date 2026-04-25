@@ -1,5 +1,6 @@
 """Graph store interface for Neo4j."""
 
+import json
 from typing import List, Dict, Any, Optional
 from loguru import logger
 from src.config.settings import settings
@@ -42,7 +43,7 @@ class GraphStore:
                     """,
                     id=entity_id,
                     label=label,
-                    properties=properties
+                    properties=json.dumps(properties) if isinstance(properties, dict) else str(properties)
                 )
             logger.debug(f"Created entity {entity_id} with label {label}")
             return True
@@ -70,7 +71,7 @@ class GraphStore:
                     source_id=source_id,
                     target_id=target_id,
                     relation_type=relation_type,
-                    properties=properties
+                    properties=json.dumps(properties) if isinstance(properties, dict) else str(properties)
                 )
             logger.debug(f"Created relationship {source_id} -> {target_id}")
             return True

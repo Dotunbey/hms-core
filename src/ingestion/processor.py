@@ -1,6 +1,7 @@
 import os
 import json
 import hashlib
+import asyncio
 from typing import List, Dict, Any
 from loguru import logger
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -14,14 +15,26 @@ from src.memory.vector_store import VectorStore
 from src.memory.graph_store import GraphStore
 from src.config.settings import settings
 
+# Use a cheaper model with higher rate limits for entity extraction
+ENTITY_EXTRACTION_MODEL = "gemini-2.0-flash"
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 5  # seconds
+
 class DocumentProcessor:
     def __init__(self):
         self.blob_storage = BlobStorage()
         self.parser = DocumentParser()
         self.vector_store = VectorStore()
         self.graph_store = GraphStore()
+        # Main LLM for agent responses (high quality)
         self.llm = ChatGoogleGenerativeAI(
             model=settings.LLM_MODEL,
+            google_api_key=settings.GOOGLE_API_KEY,
+            temperature=0
+        )
+        # Separate LLM for entity extraction (higher rate limits)
+        self.entity_llm = ChatGoogleGenerativeAI(
+            model=ENTITY_EXTRACTION_MODEL,
             google_api_key=settings.GOOGLE_API_KEY,
             temperature=0
         )
@@ -31,7 +44,7 @@ class DocumentProcessor:
         return hashlib.sha256(unique_string.encode()).hexdigest()
 
     async def _extract_entities(self, content: str) -> Dict[str, Any]:
-        """Extracts entities and relationships from a text block."""
+        """Extracts entities and relationships from a text block with retry logic."""
         if not content or len(content.strip()) < 10:
             return {"entities": []}
             
@@ -43,19 +56,30 @@ class DocumentProcessor:
             ("user", "Text: {text}")
         ])
         
-        chain = prompt | self.llm
-        try:
-            response = await chain.ainvoke({"text": content[:2000]})
-            content_str = response.content.strip()
-            if content_str.startswith("```json"):
-                content_str = content_str[7:-3]
-            elif content_str.startswith("```"):
-                content_str = content_str[3:-3]
-                
-            return json.loads(content_str)
-        except Exception as e:
-            logger.error(f"Entity extraction failed: {e}")
-            return {"entities": []}
+        chain = prompt | self.entity_llm
+        
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = await chain.ainvoke({"text": content[:2000]})
+                content_str = response.content.strip()
+                if content_str.startswith("```json"):
+                    content_str = content_str[7:-3]
+                elif content_str.startswith("```"):
+                    content_str = content_str[3:-3]
+                    
+                return json.loads(content_str)
+            except Exception as e:
+                error_str = str(e)
+                if "RESOURCE_EXHAUSTED" in error_str or "429" in error_str:
+                    delay = RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(f"Rate limited on entity extraction (attempt {attempt + 1}/{MAX_RETRIES}). Retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(f"Entity extraction failed: {e}")
+                    return {"entities": []}
+        
+        logger.warning("Entity extraction skipped after max retries")
+        return {"entities": []}
 
     async def _resolve_and_store_graph(self, entities: List[Dict[str, Any]], source_id: str):
         """Validates and deduplicates entities before storing in Neo4j."""
@@ -150,9 +174,10 @@ class DocumentProcessor:
                 db.add(mem_obj)
                 db.flush()
                 
-                # Graph Extraction & Storage
+                # Graph Extraction & Storage (with rate-limit-friendly pacing)
                 analysis = await self._extract_entities(block_text)
                 await self._resolve_and_store_graph(analysis.get("entities", []), source_id=db_doc.id)
+                await asyncio.sleep(1)  # pace requests to avoid bursts
                 
                 # Vector Embedding & Storage (Semantic Meaning)
                 if block_text:
