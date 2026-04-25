@@ -114,7 +114,7 @@ class HybridRetriever:
         from src.config.settings import settings
         
         llm = ChatGoogleGenerativeAI(
-            model=settings.LLM_MODEL,
+            model="gemini-2.0-flash",
             google_api_key=settings.GOOGLE_API_KEY,
             temperature=0
         )
@@ -150,9 +150,9 @@ class HybridRetriever:
                     result = await session.run(
                         """
                         MATCH (e:Entity)
-                        WHERE toLower(e.properties.name) CONTAINS toLower($name)
+                        WHERE toLower(e.properties) CONTAINS toLower($name)
                         OPTIONAL MATCH (e)-[r]->(related:Entity)
-                        RETURN e, type(r) as r_type, properties(r) as r_props, related
+                        RETURN e, type(r) as r_type, r.properties as r_props, related
                         LIMIT 10
                         """,
                         name=name
